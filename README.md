@@ -1,5 +1,7 @@
 # dsh-balance-meter
 
+English | [中文](README.zh.md)
+
 DeepSeek account balance and session-cost readout for the DeepSeek Harness (DSH) Web GUI.
 
 - Live account balance (queries the official Get User Balance endpoint)

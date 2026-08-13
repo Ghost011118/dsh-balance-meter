@@ -1,0 +1,13 @@
+﻿# 依赖与构建缓存
+node_modules/
+*.tsbuildinfo
+
+# npm 认证配置（含令牌引用，禁止提交）
+.npmrc
+
+# 本地日志与系统文件
+*.log
+.DS_Store
+
+# pnpm 存储
+.pnpm-store/

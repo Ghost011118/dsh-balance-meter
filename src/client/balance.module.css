@@ -1,0 +1,90 @@
+/* dsh-balance-meter input selector chip styles. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--dsh-color-border, rgba(128, 128, 128, 0.35));
+  border-radius: 999px;
+  background: var(--dsh-color-surface, transparent);
+  color: var(--dsh-color-text, inherit);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  position: relative;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  border-color: var(--dsh-color-accent, rgba(80, 160, 255, 0.7));
+}
+
+.chipOpen {
+  border-color: var(--dsh-color-accent, rgba(80, 160, 255, 0.7));
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dsh-color-danger, #e5534b);
+  flex: none;
+}
+
+.dotOk {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dsh-color-success, #2da44e);
+  flex: none;
+}
+
+.details {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 140px;
+  padding: 6px 8px;
+  border: 1px solid var(--dsh-color-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  background: var(--dsh-color-surface-elevated, #1f1f1f);
+  color: var(--dsh-color-text, inherit);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  font-size: 11px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rowRight {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sep {
+  opacity: 0.45;
+}
+
+.cost {
+  opacity: 0.85;
+}
+
+.costRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--dsh-color-border, rgba(128, 128, 128, 0.25));
+  padding-top: 4px;
+  margin-top: 4px;
+}

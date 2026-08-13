@@ -1,0 +1,10 @@
+# dsh-balance-meter bundle patch: inserts its plugin row into the web profile
+# roster. The bundle is the official dsh plugin shape — install it with
+# `dsh plugin --profile web add <path-or-git-url>`.
+#
+# The single row mounts BOTH halves: the host side (DeepSeek Get User Balance
+# query + /api/balance JSON endpoints) and the browser side (the page
+# balance/usage readout, via the dsh.client declaration in package.json).
+- insert:
+    - id: balance
+      name: 'dsh-balance-meter'

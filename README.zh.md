@@ -51,13 +51,13 @@ dsh plugin --profile web add link:$(pwd)/dsh-balance-meter
     - id: balance
       name: 'dsh-balance-meter'
       config:
-        model: flash        # 'flash'（默认）或 'pro'
+        model: auto         # 'auto'（默认）| 'flash' | 'pro'
         pricingRefreshHours: 6
 ```
 
 | 键 | 类型 | 默认值 | 含义 |
 |---|---|---|---|
-| `model` | `'flash' \| 'pro'` | `flash` | 兜底价格预设：仅当无法解析出会话实际模型时使用；正常情况下按每个会话的实时模型计价 |
+| `model` | `'auto' \| 'flash' \| 'pro'` | `auto` | `auto` 从会话请求头自动识别模型（flash/pro）；`flash`/`pro` 强制指定该预设、忽略自动识别 |
 | `pricingRefreshHours` | `number` | `6` | 自动刷新官方价格页的间隔（小时） |
 | `apiKeyEnv` | `string` | `DEEPSEEK_API_KEY` | 存储 DeepSeek API Key 的凭据引用 |
 | `baseUrl` | `string` | `https://api.deepseek.com` | API 基础地址（网关/兼容接口时覆盖） |
@@ -67,7 +67,7 @@ dsh plugin --profile web add link:$(pwd)/dsh-balance-meter
 
 插件读取 DSH 持久化的 `tokenUsage` 投影（与内置统计行同一套记账），把四个分桶——未命中输入、缓存读、缓存写、输出——按官方价格页解析出的单价换算为金额。DeepSeek 不对缓存写单独计费，默认按 0。
 
-价格集按真正驱动该会话的模型选取：每个会话的请求头都会记录最近一次请求的 provider/model，插件将该 id（`deepseek-v4-flash` → flash、`deepseek-v4-pro` → pro）映射到对应的每百万 tokens 单价。因此会话按产生其用量所用的模型计价，而非写死的 flash。当尚无请求头或模型 id 无法识别时，回退到配置的 `model` 预设（默认 `flash`）。
+价格集在 `auto`（默认）模式下按真正驱动该会话的模型选取：每个会话的请求头都会记录最近一次请求的 provider/model，插件将该 id（`deepseek-v4-flash` → flash、`deepseek-v4-pro` → pro）映射到对应的每百万 tokens 单价。因此会话按产生其用量所用的模型计价，而非写死的 flash。当尚无请求头或模型 id 无法识别时，`auto` 回退到 flash。显式设置 `model: flash` 或 `model: pro` 会**强制**采用该预设、忽略自动识别，方便你想锁定某个模型计价时使用。
 
 2026-08-17 峰谷定价上线前使用当前单价；上线后按当前北京时段的峰/闲价格计费。若官方价格页抓取失败，回退到内置预设（flash：0.02 / 1 / 2 元每百万 tokens）。组合配置中显式的 `cost.*` 覆盖优先于任何预设。花费 JSON 同时返回 `pricingKey` 与 `model`，便于 chip 展示按哪个模型计价。
 

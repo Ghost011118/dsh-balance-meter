@@ -61,13 +61,13 @@ official pricing page). Optional composition settings:
     - id: balance
       name: 'dsh-balance-meter'
       config:
-        model: flash        # 'flash' (default) or 'pro'
+        model: auto         # 'auto' (default) | 'flash' | 'pro'
         pricingRefreshHours: 6
 ```
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `model` | `'flash' \| 'pro'` | `flash` | Fallback pricing preset used only when a session's live model cannot be resolved; normally the plugin prices each session by its actual model |
+| `model` | `'auto' \| 'flash' \| 'pro'` | `auto` | `auto` detects each session's model from its request header (flash/pro); `flash`/`pro` force that preset regardless of auto-detection |
 | `pricingRefreshHours` | `number` | `6` | Hours between automatic official-pricing refreshes |
 | `apiKeyEnv` | `string` | `DEEPSEEK_API_KEY` | Credential ref storing the DeepSeek API key |
 | `baseUrl` | `string` | `https://api.deepseek.com` | API base URL (gateway/compat override) |
@@ -81,13 +81,15 @@ input, cache read, cache write, output — to money using prices parsed from
 the official pricing page. Cache-write tokens are not billed separately by
 DeepSeek and default to 0.
 
-For the price set it uses the model actually driving the session: each
-session's request header records the provider/model of the most recent
-request, and the plugin maps that id (`deepseek-v4-flash` → flash,
-`deepseek-v4-pro` → pro) to the matching per-million prices. A session is
-therefore priced at whatever model produced its usage, not a hard-coded
-flash. When no header exists yet or the model id is unrecognized, it falls
-back to the configured `model` preset (default `flash`).
+For the price set, in `auto` mode (the default) it uses the model actually
+driving the session: each session's request header records the provider/model
+of the most recent request, and the plugin maps that id (`deepseek-v4-flash`
+→ flash, `deepseek-v4-pro` → pro) to the matching per-million prices. A
+session is therefore priced at whatever model produced its usage, not a
+hard-coded flash. When no header exists yet or the model id is unrecognized,
+`auto` falls back to flash. Setting `model: flash` or `model: pro` explicitly
+forces that preset and ignores auto-detection, so you can pin the estimate to
+one model when you want to.
 
 Before the 2026-08-17 peak-pricing rollout the current single prices stay
 authoritative; after it, the peak/off-peak band for the current Beijing hour

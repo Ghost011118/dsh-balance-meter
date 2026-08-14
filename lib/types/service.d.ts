@@ -52,11 +52,14 @@ export interface BalanceConfig {
     /** Minimum seconds between provider queries (browser poll pacing). */
     refreshIntervalSeconds?: number;
     /**
-     * Model pricing preset for the session cost estimate: `flash`
-     * (deepseek-v4-flash, default) or `pro` (deepseek-v4-pro). Explicit
-     * {@link CostConfig} fields override the preset.
+     * Model pricing mode for the session cost estimate:
+     * - `'auto'` (default): detect the model from each session's request header
+     *   (`deepseek-v4-flash` → flash, `deepseek-v4-pro` → pro), falling back to
+     *   flash when it cannot be resolved;
+     * - `'flash'` / `'pro'`: force that preset, ignoring auto-detection.
+     * Explicit {@link CostConfig} fields override the resolved preset.
      */
-    model?: 'flash' | 'pro';
+    model?: 'auto' | 'flash' | 'pro';
     /** Per-million-token prices for the session cost estimate. */
     cost?: CostConfig;
     /** Hours between automatic refreshes of the official pricing page. */
@@ -149,11 +152,11 @@ export declare class BalanceService extends Service {
      */
     sessionCost(session: Session): SessionCost;
     /**
-     * Resolve the pricing preset (and the raw model id, when known) actually
-     * driving this session from its request header, so the cost estimate tracks
-     * the model that produced the usage. Falls back to the configured `model`
-     * preset when no header exists or the model id is not one of the known
-     * DeepSeek families.
+     * Resolve the pricing preset (and the raw model id, when known) for this
+     * session. An explicit configured `model` (`flash`/`pro`) wins over
+     * auto-detection; otherwise (`auto`) the session's request header model id is
+     * mapped to a preset, falling back to flash when no header exists or the id
+     * is not a known DeepSeek family.
      * @param session - the session whose model to resolve.
      */
     private resolveModelForSession;

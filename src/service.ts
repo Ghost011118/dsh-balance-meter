@@ -66,11 +66,14 @@ export interface BalanceConfig {
   /** Minimum seconds between provider queries (browser poll pacing). */
   refreshIntervalSeconds?: number
   /**
-   * Model pricing preset for the session cost estimate: `flash`
-   * (deepseek-v4-flash, default) or `pro` (deepseek-v4-pro). Explicit
-   * {@link CostConfig} fields override the preset.
+   * Model pricing mode for the session cost estimate:
+   * - `'auto'` (default): detect the model from each session's request header
+   *   (`deepseek-v4-flash` → flash, `deepseek-v4-pro` → pro), falling back to
+   *   flash when it cannot be resolved;
+   * - `'flash'` / `'pro'`: force that preset, ignoring auto-detection.
+   * Explicit {@link CostConfig} fields override the resolved preset.
    */
-  model?: 'flash' | 'pro'
+  model?: 'auto' | 'flash' | 'pro'
   /** Per-million-token prices for the session cost estimate. */
   cost?: CostConfig
   /** Hours between automatic refreshes of the official pricing page. */
@@ -145,7 +148,7 @@ export class BalanceService extends Service {
   private readonly apiKeyEnv: CredentialRef
   private readonly baseUrl: string
   private readonly refreshIntervalMs: number
-  private readonly model: 'flash' | 'pro'
+  private readonly model: 'auto' | 'flash' | 'pro'
   /** Explicit per-million price overrides from `config.cost`, applied on top of any model preset. */
   private readonly userCostOverrides: CostConfig | undefined
   private pricingSnapshot: PricingSnapshot | undefined
@@ -160,7 +163,7 @@ export class BalanceService extends Service {
     this.apiKeyEnv = credentialRef(config.apiKeyEnv ?? DEFAULT_API_KEY_ENV)
     this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL
     this.refreshIntervalMs = Math.max(0, (config.refreshIntervalSeconds ?? DEFAULT_REFRESH_INTERVAL_SECONDS) * 1_000)
-    this.model = config.model ?? 'flash'
+    this.model = config.model ?? 'auto'
     this.userCostOverrides = config.cost
     this.enabled = config.enabled ?? true
     // Refresh pricing once at boot, then on a slow cadence (6h) so a price
@@ -263,14 +266,15 @@ export class BalanceService extends Service {
   }
 
   /**
-   * Resolve the pricing preset (and the raw model id, when known) actually
-   * driving this session from its request header, so the cost estimate tracks
-   * the model that produced the usage. Falls back to the configured `model`
-   * preset when no header exists or the model id is not one of the known
-   * DeepSeek families.
+   * Resolve the pricing preset (and the raw model id, when known) for this
+   * session. An explicit configured `model` (`flash`/`pro`) wins over
+   * auto-detection; otherwise (`auto`) the session's request header model id is
+   * mapped to a preset, falling back to flash when no header exists or the id
+   * is not a known DeepSeek family.
    * @param session - the session whose model to resolve.
    */
   private resolveModelForSession(session: Session): { model?: string; pricingKey: 'flash' | 'pro' } {
+    if (this.model !== 'auto') return { pricingKey: this.model }
     const header = typeof session.requestHeader === 'function' ? session.requestHeader() : undefined
     const modelId = header?.config?.model
     if (typeof modelId === 'string' && modelId.length > 0) {
@@ -278,7 +282,7 @@ export class BalanceService extends Service {
       if (lower.includes('pro')) return { model: modelId, pricingKey: 'pro' }
       if (lower.includes('flash')) return { model: modelId, pricingKey: 'flash' }
     }
-    return { pricingKey: this.model }
+    return { pricingKey: 'flash' }
   }
 
   /**
@@ -288,7 +292,7 @@ export class BalanceService extends Service {
    * preset for that model.
    * @param pricingKey - the model preset to price for (`flash` or `pro`).
    */
-  private effectiveCostConfig(pricingKey: 'flash' | 'pro' = this.model): ReturnType<typeof resolveCostConfig> {
+  private effectiveCostConfig(pricingKey: 'flash' | 'pro' = 'flash'): ReturnType<typeof resolveCostConfig> {
     const snapshot = this.pricingSnapshot
     if (snapshot !== undefined && snapshot.error === undefined) {
       const prices = snapshot.current[pricingKey]

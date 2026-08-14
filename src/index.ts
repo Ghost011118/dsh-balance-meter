@@ -11,7 +11,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import z from 'schemastery'
+import z from '@deepseek-ai/schemastery'
 import {
   BalanceService,
   DEFAULT_API_KEY_ENV,

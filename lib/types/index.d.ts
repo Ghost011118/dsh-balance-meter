@@ -8,7 +8,7 @@
  * @module dsh-balance-meter
  */
 import { Context } from '@deepseek-ai/cordis';
-import z from 'schemastery';
+import z from '@deepseek-ai/schemastery';
 import { type BalanceConfig } from './service.ts';
 export { BalanceService } from './service.ts';
 export type { BalanceConfig, BalanceInfo, BalanceResponse, BalanceView, SessionCost } from './service.ts';

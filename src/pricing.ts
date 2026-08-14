@@ -36,8 +36,11 @@ export interface PricingSnapshot {
 /** Official pricing page URL (zh-cn). */
 export const PRICING_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'
 
-/** Number regex: `0.02`, `1`, `2`, `3.0` etc. */
-const PRICE_RE = /(\d+(?:\.\d+)?)\s*元/g
+/** Number regex: `0.02`, `1`, `2`, `3.0` etc. Deliberately non-global: a
+ * shared global regex leaks `lastIndex` across `exec` calls and would skip the
+ * second price cell (the pro price), silently repricing pro sessions at the
+ * flash rate. */
+const PRICE_RE = /(\d+(?:\.\d+)?)\s*元/
 
 /** Strip HTML tags to plain text (keeps cell order). */
 function stripHtml(html: string): string {

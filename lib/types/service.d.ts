@@ -95,6 +95,10 @@ export interface SessionCost {
         cacheWrite: number;
         output: number;
     };
+    /** Pricing preset used for this estimate: `flash`, `pro`, or the fallback configured model. */
+    pricingKey: 'flash' | 'pro';
+    /** The provider model id the estimate was based on; absent when only the fallback preset applied. */
+    model?: string;
 }
 declare module '@deepseek-ai/cordis' {
     interface Context {
@@ -111,7 +115,8 @@ export declare class BalanceService extends Service {
     private readonly baseUrl;
     private readonly refreshIntervalMs;
     private readonly model;
-    private costConfig;
+    /** Explicit per-million price overrides from `config.cost`, applied on top of any model preset. */
+    private readonly userCostOverrides;
     private pricingSnapshot;
     private pricingTimer;
     private cached;
@@ -119,15 +124,16 @@ export declare class BalanceService extends Service {
     private inflight;
     private enabled;
     constructor(ctx: Context, config?: BalanceConfig);
-    /** Resolve the cost config from the model preset + explicit overrides. */
-    private resolveCostFromPreset;
     /** Whether the balance service answers queries while enabled. */
     isEnabled(): boolean;
     /** Master switch: stop answering fresh provider queries (cache may still read). */
     setEnabled(enabled: boolean): void;
     /**
-     * RPC: most recent balance + usage view. Returns the cached view when it is
-     * still fresh, otherwise re-queries the provider (deduped when concurrent).
+     * RPC: most recent balance + usage view. A healthy (error-free) cached view
+     * is returned while still fresh; an erroneous view is never reused as fresh,
+     * so the next poll re-queries the provider and the readout recovers
+     * automatically once the underlying condition clears (without a manual
+     * click). Concurrent queries are deduped.
      */
     view(): Promise<BalanceView>;
     /** RPC: force a fresh provider query (bypasses the cache window). */
@@ -135,17 +141,34 @@ export declare class BalanceService extends Service {
     /**
      * RPC: current session token usage + estimated cost. Reads the official
      * `tokenUsage` projection (registered by dsh-token-meter) through the
-     * session-projection registry and applies the configured per-million
-     * prices. Returns zeroed values when the projection is unavailable.
+     * session-projection registry and applies per-million prices for the model
+     * actually driving this session (read from the session's request header),
+     * falling back to the configured `model` preset when the live model cannot
+     * be resolved. Returns zeroed values when the projection is unavailable.
      * @param session - the session whose usage is read.
      */
     sessionCost(session: Session): SessionCost;
     /**
-     * The cost config in effect right now: auto-fetched official prices when
-     * available (peak table applied by the current Beijing-hour band once the
-     * peak rollout is live), otherwise the configured preset.
+     * Resolve the pricing preset (and the raw model id, when known) actually
+     * driving this session from its request header, so the cost estimate tracks
+     * the model that produced the usage. Falls back to the configured `model`
+     * preset when no header exists or the model id is not one of the known
+     * DeepSeek families.
+     * @param session - the session whose model to resolve.
+     */
+    private resolveModelForSession;
+    /**
+     * The cost config in effect right now for one pricing preset: auto-fetched
+     * official prices when available (peak table applied by the current
+     * Beijing-hour band once the peak rollout is live), otherwise the configured
+     * preset for that model.
+     * @param pricingKey - the model preset to price for (`flash` or `pro`).
      */
     private effectiveCostConfig;
+    /** One preset field, with any explicit user override applied. */
+    private applyOverride;
+    /** The built-in preset prices for one model. */
+    private modelCost;
     /**
      * Re-fetch the official pricing page and update the effective cost config.
      * Failures keep the previous snapshot (or the built-in preset) and record

@@ -1,4 +1,4 @@
-﻿# 依赖与构建缓存
+# 依赖与构建缓存
 node_modules/
 *.tsbuildinfo
 
@@ -11,3 +11,7 @@ node_modules/
 
 # pnpm 存储
 .pnpm-store/
+
+# 安装期自动生成的 workspace/lock 产物（本包在 DSH profile 中通过 link 安装）
+pnpm-lock.yaml
+pnpm-workspace.yaml

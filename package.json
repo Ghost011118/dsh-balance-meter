@@ -1,6 +1,6 @@
 {
   "name": "dsh-balance-meter",
-  "description": "DeepSeek account balance and usage readout for the dsh web GUI: queries the official Get User Balance endpoint and shows current remaining balance and spend on the page.",
+  "description": "Official, proxy-compatible, or locally accounted balance and session-cost readout for the DSH web GUI.",
   "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@11.7.0",
@@ -37,6 +37,7 @@
     "lib/**/*.d.ts",
     "lib/**/*.d.ts.map",
     "src",
+    "!src/**/*.test.ts",
     "cordis.patch.yml"
   ],
   "license": "BSD-3-Clause",

@@ -16,18 +16,39 @@ import {
   BalanceService,
   DEFAULT_API_KEY_ENV,
   DEFAULT_BASE_URL,
+  DEFAULT_CURRENCY,
   DEFAULT_REFRESH_INTERVAL_SECONDS,
+  validateBalanceConfig,
   type BalanceConfig,
+  type ManualLedger,
 } from './service.ts'
 import { BALANCE_API_PREFIX, makeBalanceRoutes } from './routes.ts'
 
 export { BalanceService } from './service.ts'
-export type { BalanceConfig, BalanceInfo, BalanceResponse, BalanceView, SessionCost } from './service.ts'
+export type {
+  BalanceConfig,
+  BalanceInfo,
+  BalanceResponse,
+  BalanceSource,
+  BalanceView,
+  ManualLedger,
+  SessionCost,
+  UsageCheckpoint,
+} from './service.ts'
 export { BALANCE_API_PREFIX, makeBalanceRoutes } from './routes.ts'
 export {
   DEFAULT_API_KEY_ENV,
   DEFAULT_BASE_URL,
+  DEFAULT_CURRENCY,
   DEFAULT_REFRESH_INTERVAL_SECONDS,
+} from './service.ts'
+export {
+  advanceManualLedger,
+  createManualLedger,
+  manualLedgerView,
+  parseProviderBalance,
+  resolveBalanceSource,
+  validateBalanceConfig,
 } from './service.ts'
 export { resolveCostConfig, costOfUsage, costOfTokens, DEFAULT_COST_CONFIG, FLASH_COST_CONFIG, PRO_COST_CONFIG } from './cost.ts'
 export type { CostBreakdown, CostConfig } from './cost.ts'
@@ -38,9 +59,33 @@ export type { ParsedPrices, PricingSnapshot } from './pricing.ts'
 export const BALANCE_SETTINGS_NAMESPACE = 'balance'
 
 /** Settings section schema: what the web settings surface edits. */
-export const BALANCE_SETTINGS_SCHEMA = z.object({
+const USAGE_CHECKPOINT_SCHEMA = z.object({
+  uncachedInputTokens: z.number().min(0),
+  outputTokens: z.number().min(0),
+  cacheReadTokens: z.number().min(0),
+  cacheWriteTokens: z.number().min(0),
+})
+
+const MANUAL_LEDGER_SCHEMA = z.object({
+  version: z.const(1),
+  initialBalance: z.number().min(0),
+  currency: z.string(),
+  baselineAt: z.number().min(0),
+  remaining: z.number(),
+  spent: z.number().min(0),
+  sessions: z.dict(USAGE_CHECKPOINT_SCHEMA),
+}).role('secret').hidden()
+
+export const BALANCE_SETTINGS_SCHEMA: z<any> = z.object({
+  source: z.union(['official', 'proxy', 'manual']),
   apiKeyEnv: z.string().role('credential-ref').default(DEFAULT_API_KEY_ENV),
   baseUrl: z.string().default(DEFAULT_BASE_URL),
+  balanceEndpoint: z.string(),
+  proxyBalancePath: z.string(),
+  proxyCurrency: z.string().default(DEFAULT_CURRENCY),
+  manualBalance: z.number().min(0),
+  manualCurrency: z.string().default(DEFAULT_CURRENCY),
+  manualLedger: MANUAL_LEDGER_SCHEMA,
   refreshIntervalSeconds: z.number().min(0).max(3600).default(DEFAULT_REFRESH_INTERVAL_SECONDS),
   enabled: z.boolean().default(true),
 })
@@ -54,32 +99,41 @@ export const inject = ['webServer', 'sessions']
 /** Register the balance service and its API routes on the context. */
 export function apply(ctx: Context, config: BalanceConfig = {}): void {
   const service = new BalanceService(ctx, config)
+  const namespace = settingsNamespace(BALANCE_SETTINGS_NAMESPACE)
 
   const base: BalanceConfig = {
+    ...(config.source === undefined ? {} : { source: config.source }),
     apiKeyEnv: config.apiKeyEnv ?? DEFAULT_API_KEY_ENV,
     baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
+    ...(config.balanceEndpoint === undefined ? {} : { balanceEndpoint: config.balanceEndpoint }),
+    ...(config.proxyBalancePath === undefined ? {} : { proxyBalancePath: config.proxyBalancePath }),
+    proxyCurrency: config.proxyCurrency ?? DEFAULT_CURRENCY,
+    ...(config.manualBalance === undefined ? {} : { manualBalance: config.manualBalance }),
+    manualCurrency: config.manualCurrency ?? DEFAULT_CURRENCY,
+    ...(config.manualLedger === undefined ? {} : { manualLedger: config.manualLedger }),
     refreshIntervalSeconds: config.refreshIntervalSeconds ?? DEFAULT_REFRESH_INTERVAL_SECONDS,
     ...(config.model === undefined ? {} : { model: config.model }),
     ...(config.cost === undefined ? {} : { cost: config.cost }),
     enabled: config.enabled ?? true,
   }
-  // The settings surface edits only the schema-declared fields; the cost
-  // pricing stays composition-only. `current` follows the schema's resolved
-  // shape, widened to the config surface.
-  interface SettingsSection {
-    apiKeyEnv?: string | null
-    baseUrl?: string | null
-    refreshIntervalSeconds?: number | null
-    enabled?: boolean | null
-  }
-  let current: () => SettingsSection = () => base as SettingsSection
+  // The settings surface edits schema-declared fields; model/cost remain
+  // composition-only and are re-applied beneath the resolved user section.
+  let current: () => BalanceConfig = () => base
 
-  const applyConfig = (section: SettingsSection): void => {
-    service.setEnabled(section.enabled ?? true)
-    // Simple reconciliation: the public setter and config are always in sync
-    // for the fields the settings surface edits; key/baseUrl changes take
-    // effect on the next provider query because resolution is per-call.
+  const applyConfig = (section: BalanceConfig): void => {
+    service.configure({ ...base, ...section, model: config.model, cost: config.cost })
   }
+
+  service.setManualLedgerPersistence(async (ledger: ManualLedger) => {
+    const settings = ctx.get('settings') as {
+      writable: boolean
+      mutate(ns: ReturnType<typeof settingsNamespace>, ops: readonly unknown[]): Promise<void>
+    } | undefined
+    if (settings === undefined || !settings.writable) {
+      throw new Error('manual mode requires a writable DSH settings provider')
+    }
+    await settings.mutate(namespace, [{ op: 'set', path: ['manualLedger'], value: ledger }])
+  })
 
   // Resolve a session id to its cost snapshot. The sessions store is a
   // service in the inject list; the projection registry is read lazily inside
@@ -111,12 +165,18 @@ export function apply(ctx: Context, config: BalanceConfig = {}): void {
     }
   }
 
-  installSettingsSection(ctx, settingsNamespace(BALANCE_SETTINGS_NAMESPACE), BALANCE_SETTINGS_SCHEMA, base, {
+  installSettingsSection(ctx, namespace, BALANCE_SETTINGS_SCHEMA, base, {
     setSource: (source) => { current = source },
     onChange: () => {
       applyConfig(current())
       syncRoutes()
     },
+    validate: validateBalanceConfig,
+  })
+  ctx.on('session/created', (session) => {
+    // A startup ordering race is harmless: the first manual view retries after
+    // the settings namespace is writable. Contain the observer promise here.
+    void service.checkpointSession(session).catch(() => undefined)
   })
   syncRoutes()
 }

@@ -79,6 +79,14 @@
   opacity: 0.85;
 }
 
+.source {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--dsh-color-surface-elevated, rgba(128, 128, 128, 0.16));
+  font-size: 10px;
+  opacity: 0.85;
+}
+
 .costRow {
   display: flex;
   align-items: center;

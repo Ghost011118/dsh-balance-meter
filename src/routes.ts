@@ -8,7 +8,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
-import type { BalanceService, BalanceView, SessionCost } from './service.ts'
+import type { BalanceService, SessionCost } from './service.ts'
 
 /** Browser-facing base path of the balance API. */
 export const BALANCE_API_PREFIX = '/api/balance'
@@ -24,20 +24,6 @@ function requireMethod(req: IncomingMessage, res: ServerResponse, method: string
   if (req.method === method) return true
   json(res, 405, { ok: false, error: 'method-not-allowed' })
   return false
-}
-
-/** Wrap one async balance read as a GET JSON route. */
-function getRoute(path: string, run: () => Promise<BalanceView> | BalanceView): WebRoute {
-  return {
-    kind: 'exact',
-    path,
-    handler: (req: IncomingMessage, res: ServerResponse): void => {
-      if (!requireMethod(req, res, 'GET')) return
-      Promise.resolve(run()).then((value) => json(res, 200, value), (error) => {
-        json(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
-      })
-    },
-  }
 }
 
 /** Wrap one request-aware JSON route (e.g. the session-cost read). */
@@ -74,8 +60,16 @@ export function makeBalanceRoutes(
   resolveSession: (id: string) => { session: unknown; cost: SessionCost } | undefined,
 ): WebRoute[] {
   return [
-    getRoute(`${BALANCE_API_PREFIX}`, () => service.view()),
-    getRoute(`${BALANCE_API_PREFIX}/refresh`, () => service.refresh()),
+    getRequestRoute(`${BALANCE_API_PREFIX}`, (req) => {
+      const id = sessionParam(req)
+      const resolved = id === undefined ? undefined : resolveSession(id)
+      return service.view(resolved?.session as never)
+    }),
+    getRequestRoute(`${BALANCE_API_PREFIX}/refresh`, (req) => {
+      const id = sessionParam(req)
+      const resolved = id === undefined ? undefined : resolveSession(id)
+      return service.refresh(resolved?.session as never)
+    }),
     getRequestRoute(`${BALANCE_API_PREFIX}/cost`, (req) => {
       const id = sessionParam(req)
       if (id === undefined) return { ok: false, error: 'missing-session' }

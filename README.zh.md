@@ -4,7 +4,7 @@
 
 DeepSeek Harness (DSH) Web 界面的账户余额与本场会话花费读数插件。
 
-- 实时账户余额（查询官方 Get User Balance 接口）
+- 余额来源明确区分：官方 API、中转兼容端点或本地手工记账余额
 - 当前会话估算花费（token 用量 × 官方单价）
 - 按模型计价：从每个会话的请求头读取实际使用的模型（flash / pro），让花费跟随你真正用的模型，而非固定默认
 - 每 6 小时自动抓取官方价格页，价格变动与 2026-08-17 峰谷定价上线后均无需更新插件
@@ -51,17 +51,38 @@ dsh plugin --profile web add link:$(pwd)/dsh-balance-meter
     - id: balance
       name: 'dsh-balance-meter'
       config:
+        source: official    # official（默认）| proxy | manual
         model: auto         # 'auto'（默认）| 'flash' | 'pro'
         pricingRefreshHours: 6
 ```
 
 | 键 | 类型 | 默认值 | 含义 |
 |---|---|---|---|
+| `source` | `'official' \| 'proxy' \| 'manual'` | `official` | 显示余额的数据来源；旧配置若只改了 `baseUrl`，会自动标记为 `proxy` |
+| `balanceEndpoint` | `string` | `/user/balance` | 中转余额接口路径或完整 HTTP(S) URL |
+| `proxyBalancePath` | `string` | 未设置 | 中转不返回 `balance_infos` 时，数字余额的点路径，例如 `data.balance` |
+| `proxyCurrency` | `string` | `CNY` | 中转数字余额的币种 |
+| `manualBalance` | `number >= 0` | 未设置 | 用户输入的当前余额；修改后会新建本地记账基线 |
+| `manualCurrency` | `string` | `CNY` | 本地余额币种 |
 | `model` | `'auto' \| 'flash' \| 'pro'` | `auto` | `auto` 从会话请求头自动识别模型（flash/pro）；`flash`/`pro` 强制指定该预设、忽略自动识别 |
 | `pricingRefreshHours` | `number` | `6` | 自动刷新官方价格页的间隔（小时） |
 | `apiKeyEnv` | `string` | `DEEPSEEK_API_KEY` | 存储 DeepSeek API Key 的凭据引用 |
 | `baseUrl` | `string` | `https://api.deepseek.com` | API 基础地址（网关/兼容接口时覆盖） |
 | `refreshIntervalSeconds` | `number` | `30` | 两次余额查询的最小间隔（秒） |
+
+### 中转与本地模式
+
+`proxy` 模式下 API Key 始终留在 DSH 主机，只作为 Bearer 凭据发往所配
+端点。兼容 DeepSeek 的中转可直接返回 `balance_infos`；其他格式必须配置
+`proxyBalancePath`。字段缺失或不是数字时会明确返回“中转余额错误”，绝不会
+伪装成官方余额。
+
+`manual` 模式要求 DSH 配有可写 settings provider。隐藏账本复用现有
+`balance` 设置命名空间，不另建明文文件，也不会随普通余额响应发给浏览器。
+账本保存基线、剩余余额、本地累计扣费以及每个会话的累计 token 检查点；只
+扣除上次成功持久化之后的正向 token 增量，所以轮询和重启都不会重复扣除同一
+份累计会话消耗。修改 `manualBalance` 或 `manualCurrency` 会有意重建基线，并
+先为当前所有活动会话建立检查点。
 
 ## 花费如何估算
 

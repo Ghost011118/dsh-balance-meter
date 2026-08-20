@@ -4,7 +4,8 @@ English | [中文](README.zh.md)
 
 DeepSeek account balance and session-cost readout for the DeepSeek Harness (DSH) Web GUI.
 
-- Live account balance (queries the official Get User Balance endpoint)
+- Explicit balance sources: official API, proxy-compatible endpoint, or a
+  manual balance accounted and persisted locally
 - Current session estimated spend (token usage x official pricing)
 - Per-model pricing: reads the model actually driving each session from its
   request header (flash vs pro), so the cost tracks the model you used instead
@@ -61,17 +62,41 @@ official pricing page). Optional composition settings:
     - id: balance
       name: 'dsh-balance-meter'
       config:
+        source: official    # official (default) | proxy | manual
         model: auto         # 'auto' (default) | 'flash' | 'pro'
         pricingRefreshHours: 6
 ```
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
+| `source` | `'official' \| 'proxy' \| 'manual'` | `official` | Provenance of the displayed balance. A legacy custom `baseUrl` with no source is automatically classified as `proxy` |
+| `balanceEndpoint` | `string` | `/user/balance` | Proxy balance path or absolute HTTP(S) URL |
+| `proxyBalancePath` | `string` | unset | Dot path (for example `data.balance`) to a numeric balance when the proxy does not return DeepSeek-compatible `balance_infos` |
+| `proxyCurrency` | `string` | `CNY` | Currency paired with `proxyBalancePath` |
+| `manualBalance` | `number >= 0` | unset | Current balance entered by the user; changing it creates a new local accounting baseline |
+| `manualCurrency` | `string` | `CNY` | Currency of the manual balance |
 | `model` | `'auto' \| 'flash' \| 'pro'` | `auto` | `auto` detects each session's model from its request header (flash/pro); `flash`/`pro` force that preset regardless of auto-detection |
 | `pricingRefreshHours` | `number` | `6` | Hours between automatic official-pricing refreshes |
 | `apiKeyEnv` | `string` | `DEEPSEEK_API_KEY` | Credential ref storing the DeepSeek API key |
 | `baseUrl` | `string` | `https://api.deepseek.com` | API base URL (gateway/compat override) |
 | `refreshIntervalSeconds` | `number` | `30` | Minimum seconds between balance queries |
+
+### Proxy and manual modes
+
+`proxy` mode keeps the API key on the DSH host and sends it only as a Bearer
+credential to the configured endpoint. A DeepSeek-compatible relay may return
+`balance_infos` directly. Other relays must configure `proxyBalancePath`; a
+missing or non-numeric value is reported as a proxy error and is never labelled
+as an official balance.
+
+`manual` mode requires a writable DSH settings provider. The hidden ledger is
+stored inside the existing `balance` settings namespace, not in a separate
+plaintext file and never in the browser response. It records a baseline,
+remaining amount, locally charged spend, and per-session cumulative-token
+checkpoints. Only positive token deltas after the last persisted checkpoint are
+charged, so polling or restarting DSH cannot deduct the same cumulative session
+usage twice. Changing `manualBalance` or `manualCurrency` intentionally creates
+a new baseline and checkpoints all currently live sessions.
 
 ## How the cost is estimated
 

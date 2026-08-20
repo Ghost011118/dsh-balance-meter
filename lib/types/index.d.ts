@@ -11,27 +11,17 @@ import { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { type BalanceConfig } from './service.ts';
 export { BalanceService } from './service.ts';
-export type { BalanceConfig, BalanceInfo, BalanceResponse, BalanceView, SessionCost } from './service.ts';
+export type { BalanceConfig, BalanceInfo, BalanceResponse, BalanceSource, BalanceView, ManualLedger, SessionCost, UsageCheckpoint, } from './service.ts';
 export { BALANCE_API_PREFIX, makeBalanceRoutes } from './routes.ts';
-export { DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_REFRESH_INTERVAL_SECONDS, } from './service.ts';
+export { DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_CURRENCY, DEFAULT_REFRESH_INTERVAL_SECONDS, } from './service.ts';
+export { advanceManualLedger, createManualLedger, manualLedgerView, parseProviderBalance, resolveBalanceSource, validateBalanceConfig, } from './service.ts';
 export { resolveCostConfig, costOfUsage, costOfTokens, DEFAULT_COST_CONFIG, FLASH_COST_CONFIG, PRO_COST_CONFIG } from './cost.ts';
 export type { CostBreakdown, CostConfig } from './cost.ts';
 export { fetchPricing, isPeakHour, PRICING_URL } from './pricing.ts';
 export type { ParsedPrices, PricingSnapshot } from './pricing.ts';
 /** Settings namespace of the balance capability. */
 export declare const BALANCE_SETTINGS_NAMESPACE = "balance";
-/** Settings section schema: what the web settings surface edits. */
-export declare const BALANCE_SETTINGS_SCHEMA: z<Schemastery.ObjectS<{
-    apiKeyEnv: z<string, string>;
-    baseUrl: z<string, string>;
-    refreshIntervalSeconds: z<number, number>;
-    enabled: z<boolean, boolean>;
-}>, Schemastery.ObjectT<{
-    apiKeyEnv: z<string, string>;
-    baseUrl: z<string, string>;
-    refreshIntervalSeconds: z<number, number>;
-    enabled: z<boolean, boolean>;
-}>>;
+export declare const BALANCE_SETTINGS_SCHEMA: z<any>;
 /** Stable cordis plugin name (matches cordis.patch.yml insert id). */
 export declare const name = "balance";
 /** Services required before the balance service can answer. */

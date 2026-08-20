@@ -1,9 +1,7 @@
 /**
- * dsh-balance-meter host service — the `balance.*` RPC domain. Resolves the DeepSeek
- * API key through the DSH credentials seam (`ctx.credentials`, ref
- * `DEEPSEEK_API_KEY`) and queries the official Get User Balance endpoint,
- * caching the result so the browser readout can poll without spamming the
- * provider.
+ * dsh-balance-meter host service — the `balance.*` RPC domain. Supports the
+ * official DeepSeek balance endpoint, explicitly labelled proxy-compatible
+ * endpoints, and a locally persisted manual balance ledger.
  * @module dsh-balance-meter/service
  */
 
@@ -41,6 +39,28 @@ export interface BalanceResponse {
   balance_infos: BalanceInfo[]
 }
 
+/** Provenance of the displayed balance. */
+export type BalanceSource = 'official' | 'proxy' | 'manual'
+
+/** Cumulative token counters used as a per-session manual-ledger checkpoint. */
+export interface UsageCheckpoint {
+  uncachedInputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+}
+
+/** Hidden, host-local state persisted through the DSH settings seam. */
+export interface ManualLedger {
+  version: 1
+  initialBalance: number
+  currency: string
+  baselineAt: number
+  remaining: number
+  spent: number
+  sessions: Record<string, UsageCheckpoint>
+}
+
 /** Cleaned view served to the browser readout. */
 export interface BalanceView {
   /** Query snapshot time (epoch ms). */
@@ -49,20 +69,42 @@ export interface BalanceView {
   available: boolean
   /** Per-currency buckets. */
   balances: BalanceInfo[]
+  /** Explicit provenance; a proxy response is never labelled official. */
+  source: BalanceSource
   /** The single summed total across all currencies (when exactly one currency). */
   total?: number
   /** ISO currency of {@link total}. */
   currency?: string
+  /** Manual-mode starting balance (derived summary only; no ledger is exposed). */
+  initialBalance?: number
+  /** Manual-mode locally accumulated spend (derived summary only). */
+  localSpent?: number
+  /** Manual-mode baseline time. */
+  baselineAt?: number
   /** Human-readable error when the provider query failed. */
   error?: string
 }
 
 /** Plugin configuration. */
 export interface BalanceConfig {
+  /** Balance source. Omitted custom base URLs are classified as `proxy`. */
+  source?: BalanceSource
   /** Credential reference (env-style name) storing the DeepSeek API key. */
   apiKeyEnv?: string
   /** DeepSeek API base URL (override for gateway/compat providers). */
   baseUrl?: string
+  /** Proxy endpoint path/URL; defaults to `/user/balance`. */
+  balanceEndpoint?: string
+  /** Dot path to a numeric balance in a non-DeepSeek proxy response. */
+  proxyBalancePath?: string
+  /** Currency for a numeric proxy balance. */
+  proxyCurrency?: string
+  /** User-entered current balance used to create/reset a local ledger. */
+  manualBalance?: number
+  /** Currency for {@link manualBalance}. */
+  manualCurrency?: string
+  /** Internal settings state; hidden from settings UIs and balance responses. */
+  manualLedger?: ManualLedger
   /** Minimum seconds between provider queries (browser poll pacing). */
   refreshIntervalSeconds?: number
   /**
@@ -94,6 +136,8 @@ export const DEFAULT_PRICING_REFRESH_HOURS = 6
 export const PEAK_PRICING_START_MS = Date.UTC(2026, 7, 16, 16, 0, 0)
 /** SSRF / length guard for the base URL. */
 const MAX_BASE_URL_LENGTH = 256
+/** Default local/proxy display currency. */
+export const DEFAULT_CURRENCY = 'CNY'
 
 /** One session's token usage and estimated cost. */
 export interface SessionCost {
@@ -125,6 +169,9 @@ declare module '@deepseek-ai/cordis' {
 
 /** Parse a base URL into a safe `{ origin, pathPrefix }` pair. */
 function parseBaseUrl(raw: string): { origin: string; prefix: string } {
+  if (raw.length > MAX_BASE_URL_LENGTH) {
+    throw new Error(`dsh-balance-meter: baseUrl exceeds ${MAX_BASE_URL_LENGTH} characters`)
+  }
   let url: URL
   try {
     url = new URL(raw)
@@ -134,9 +181,213 @@ function parseBaseUrl(raw: string): { origin: string; prefix: string } {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     throw new Error(`dsh-balance-meter: baseUrl must be http(s), got "${url.protocol}"`)
   }
-  let prefix = url.pathname.replace(/\/+$/, '')
-  let origin = url.origin
+  const prefix = url.pathname.replace(/\/+$/, '')
+  const origin = url.origin
   return { origin, prefix }
+}
+
+/** Whether a URL is the official DeepSeek API origin. */
+function isOfficialBaseUrl(raw: string): boolean {
+  try {
+    return new URL(raw).origin === new URL(DEFAULT_BASE_URL).origin
+  } catch {
+    return false
+  }
+}
+
+/** Preserve legacy custom `baseUrl` support while labelling it honestly. */
+export function resolveBalanceSource(config: BalanceConfig): BalanceSource {
+  if (config.source !== undefined) return config.source
+  return isOfficialBaseUrl(config.baseUrl ?? DEFAULT_BASE_URL) ? 'official' : 'proxy'
+}
+
+/** Cross-field validation shared by composition and the writable settings seam. */
+export function validateBalanceConfig(config: BalanceConfig): void {
+  const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL
+  const source = resolveBalanceSource(config)
+  parseBaseUrl(baseUrl)
+  if (source === 'official' && !isOfficialBaseUrl(baseUrl)) {
+    throw new Error('source "official" requires the https://api.deepseek.com origin; use source "proxy" for a relay')
+  }
+  if (config.manualBalance !== undefined && (!Number.isFinite(config.manualBalance) || config.manualBalance < 0)) {
+    throw new Error('manualBalance must be a finite non-negative number')
+  }
+  const manualCurrency = normalizeCurrency(config.manualCurrency)
+  normalizeCurrency(config.proxyCurrency)
+  if (source === 'manual' && config.manualBalance === undefined) {
+    throw new Error('source "manual" requires manualBalance')
+  }
+  const costCurrency = normalizeCurrency(config.cost?.currency)
+  if (source === 'manual' && manualCurrency !== costCurrency) {
+    throw new Error(`manualCurrency ${manualCurrency} must match the session-cost currency ${costCurrency}`)
+  }
+}
+
+/** Validate and normalize a user-visible currency. */
+function normalizeCurrency(value: string | undefined, fallback = DEFAULT_CURRENCY): string {
+  const currency = (value ?? fallback).trim().toUpperCase()
+  if (!/^[A-Z][A-Z0-9_-]{0,11}$/.test(currency)) {
+    throw new Error(`dsh-balance-meter: invalid currency "${value ?? ''}"`)
+  }
+  return currency
+}
+
+/** Resolve one own-property dot path without allowing prototype traversal. */
+function valueAtPath(root: unknown, path: string): unknown {
+  const segments = path.split('.').map(part => part.trim()).filter(Boolean)
+  if (segments.length === 0 || segments.some(part => part === '__proto__' || part === 'prototype' || part === 'constructor')) {
+    throw new Error(`proxyBalancePath "${path}" is invalid`)
+  }
+  let value = root
+  for (const segment of segments) {
+    if (value === null || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, segment)) {
+      throw new Error(`proxy balance path "${path}" was not found`)
+    }
+    value = (value as Record<string, unknown>)[segment]
+  }
+  return value
+}
+
+/** Parse an official or explicitly proxy-labelled balance response. */
+export function parseProviderBalance(
+  payload: unknown,
+  source: Exclude<BalanceSource, 'manual'>,
+  options: { balancePath?: string; currency?: string; fetchedAt?: number } = {},
+): BalanceView {
+  const fetchedAt = options.fetchedAt ?? Date.now()
+  const record = payload !== null && typeof payload === 'object'
+    ? payload as Partial<BalanceResponse> & Record<string, unknown>
+    : undefined
+  if (record !== undefined && Array.isArray(record.balance_infos)) {
+    const buckets: BalanceInfo[] = record.balance_infos.map((value) => {
+      const bucket = value as Partial<BalanceInfo>
+      return {
+        currency: String(bucket.currency ?? ''),
+        total_balance: String(bucket.total_balance ?? '0'),
+        granted_balance: String(bucket.granted_balance ?? '0'),
+        topped_up_balance: String(bucket.topped_up_balance ?? '0'),
+      }
+    }).filter(bucket => bucket.currency !== '')
+    if (source === 'proxy' && buckets.length === 0) {
+      throw new Error('proxy balance response contained no usable balance_infos')
+    }
+    const total = buckets.length === 1 ? Number(buckets[0]!.total_balance) : undefined
+    if (total !== undefined && !Number.isFinite(total)) {
+      throw new Error(`${source} balance response contained a non-numeric total_balance`)
+    }
+    return {
+      fetchedAt,
+      source,
+      available: record.is_available !== false,
+      balances: buckets,
+      ...(total === undefined ? {} : { total, currency: buckets[0]!.currency }),
+    }
+  }
+  if (source === 'official') {
+    throw new Error('official balance response did not match the DeepSeek balance_infos schema')
+  }
+  if (options.balancePath === undefined || options.balancePath.trim() === '') {
+    throw new Error('proxy balance response schema is unknown; configure proxyBalancePath')
+  }
+  const raw = valueAtPath(payload, options.balancePath)
+  if ((typeof raw !== 'number' && typeof raw !== 'string') || (typeof raw === 'string' && raw.trim() === '')) {
+    throw new Error(`proxy balance path "${options.balancePath}" is not numeric`)
+  }
+  const total = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isFinite(total)) {
+    throw new Error(`proxy balance path "${options.balancePath}" is not numeric`)
+  }
+  return {
+    fetchedAt,
+    source: 'proxy',
+    available: total > 0,
+    balances: [],
+    total,
+    currency: normalizeCurrency(options.currency),
+  }
+}
+
+/** Create a local ledger whose existing sessions are already checkpointed. */
+export function createManualLedger(
+  initialBalance: number,
+  currency: string,
+  baselineAt: number,
+  sessions: Record<string, UsageCheckpoint> = {},
+): ManualLedger {
+  if (!Number.isFinite(initialBalance) || initialBalance < 0) {
+    throw new Error('manualBalance must be a finite non-negative number')
+  }
+  return {
+    version: 1,
+    initialBalance,
+    currency: normalizeCurrency(currency),
+    baselineAt,
+    remaining: initialBalance,
+    spent: 0,
+    sessions,
+  }
+}
+
+/** Advance one session exactly once by charging only positive token deltas. */
+export function advanceManualLedger(
+  ledger: ManualLedger,
+  sessionId: string,
+  sessionCreatedAt: number,
+  usage: UsageCheckpoint,
+  cost: ReturnType<typeof resolveCostConfig>,
+): ManualLedger {
+  const previous = ledger.sessions[sessionId]
+  // Token projections can be temporarily absent while a restored session is
+  // still attaching. Never move a durable checkpoint backwards: otherwise a
+  // later projection recovery would charge the same cumulative tokens again.
+  const checkpoint: UsageCheckpoint = previous === undefined
+    ? { ...usage }
+    : {
+        uncachedInputTokens: Math.max(previous.uncachedInputTokens, usage.uncachedInputTokens),
+        outputTokens: Math.max(previous.outputTokens, usage.outputTokens),
+        cacheReadTokens: Math.max(previous.cacheReadTokens, usage.cacheReadTokens),
+        cacheWriteTokens: Math.max(previous.cacheWriteTokens, usage.cacheWriteTokens),
+      }
+  if (previous === undefined && sessionCreatedAt <= ledger.baselineAt) {
+    return { ...ledger, sessions: { ...ledger.sessions, [sessionId]: checkpoint } }
+  }
+  const before = previous ?? { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  const delta = {
+    inputTokens: checkpoint.uncachedInputTokens - before.uncachedInputTokens,
+    outputTokens: checkpoint.outputTokens - before.outputTokens,
+    cacheReadTokens: checkpoint.cacheReadTokens - before.cacheReadTokens,
+    cacheWriteTokens: checkpoint.cacheWriteTokens - before.cacheWriteTokens,
+  }
+  const charged = costOfUsage(delta, cost)
+  if (previous !== undefined
+    && charged === 0
+    && previous.uncachedInputTokens === checkpoint.uncachedInputTokens
+    && previous.outputTokens === checkpoint.outputTokens
+    && previous.cacheReadTokens === checkpoint.cacheReadTokens
+    && previous.cacheWriteTokens === checkpoint.cacheWriteTokens) {
+    return ledger
+  }
+  return {
+    ...ledger,
+    remaining: ledger.remaining - charged,
+    spent: ledger.spent + charged,
+    sessions: { ...ledger.sessions, [sessionId]: checkpoint },
+  }
+}
+
+/** Project a ledger into the browser-safe summary (never includes checkpoints). */
+export function manualLedgerView(ledger: ManualLedger, fetchedAt = Date.now()): BalanceView {
+  return {
+    fetchedAt,
+    source: 'manual',
+    available: ledger.remaining > 0,
+    balances: [],
+    total: ledger.remaining,
+    currency: ledger.currency,
+    initialBalance: ledger.initialBalance,
+    localSpent: ledger.spent,
+    baselineAt: ledger.baselineAt,
+  }
 }
 
 /**
@@ -145,12 +396,21 @@ function parseBaseUrl(raw: string): { origin: string; prefix: string } {
  * without a plugin restart.
  */
 export class BalanceService extends Service {
-  private readonly apiKeyEnv: CredentialRef
-  private readonly baseUrl: string
-  private readonly refreshIntervalMs: number
-  private readonly model: 'auto' | 'flash' | 'pro'
+  private apiKeyEnv: CredentialRef
+  private baseUrl: string
+  private source: BalanceSource
+  private balanceEndpoint: string | undefined
+  private proxyBalancePath: string | undefined
+  private proxyCurrency: string
+  private manualBalance: number | undefined
+  private manualCurrency: string
+  private manualLedger: ManualLedger | undefined
+  private persistManualLedger: ((ledger: ManualLedger) => Promise<void>) | undefined
+  private manualQueue: Promise<void> = Promise.resolve()
+  private refreshIntervalMs: number
+  private model: 'auto' | 'flash' | 'pro'
   /** Explicit per-million price overrides from `config.cost`, applied on top of any model preset. */
-  private readonly userCostOverrides: CostConfig | undefined
+  private userCostOverrides: CostConfig | undefined
   private pricingSnapshot: PricingSnapshot | undefined
   private pricingTimer: NodeJS.Timeout | undefined
   private cached: BalanceView | undefined
@@ -160,18 +420,56 @@ export class BalanceService extends Service {
 
   constructor(ctx: Context, config: BalanceConfig = {}) {
     super(ctx, 'balance')
-    this.apiKeyEnv = credentialRef(config.apiKeyEnv ?? DEFAULT_API_KEY_ENV)
-    this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL
-    this.refreshIntervalMs = Math.max(0, (config.refreshIntervalSeconds ?? DEFAULT_REFRESH_INTERVAL_SECONDS) * 1_000)
-    this.model = config.model ?? 'auto'
-    this.userCostOverrides = config.cost
-    this.enabled = config.enabled ?? true
+    this.apiKeyEnv = credentialRef(DEFAULT_API_KEY_ENV)
+    this.baseUrl = DEFAULT_BASE_URL
+    this.source = 'official'
+    this.proxyCurrency = DEFAULT_CURRENCY
+    this.manualCurrency = DEFAULT_CURRENCY
+    this.refreshIntervalMs = DEFAULT_REFRESH_INTERVAL_SECONDS * 1_000
+    this.model = 'auto'
+    this.enabled = true
+    this.configure(config)
     // Refresh pricing once at boot, then on a slow cadence (6h) so a price
     // change or the peak-pricing rollout is picked up without a restart.
     void this.refreshPricing()
     const cadenceMs = (config.pricingRefreshHours ?? DEFAULT_PRICING_REFRESH_HOURS) * 3_600_000
     this.pricingTimer = setInterval(() => { void this.refreshPricing() }, cadenceMs)
     this.pricingTimer.unref?.()
+  }
+
+  /** Apply the current resolved settings snapshot to every live-query field. */
+  configure(config: BalanceConfig): void {
+    const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL
+    const source = resolveBalanceSource(config)
+    validateBalanceConfig(config)
+    const manualCurrency = normalizeCurrency(config.manualCurrency)
+    const proxyCurrency = normalizeCurrency(config.proxyCurrency)
+    const manualInputChanged = this.manualBalance !== config.manualBalance || this.manualCurrency !== manualCurrency
+    this.apiKeyEnv = credentialRef(config.apiKeyEnv ?? DEFAULT_API_KEY_ENV)
+    this.baseUrl = baseUrl
+    this.source = source
+    this.balanceEndpoint = config.balanceEndpoint
+    this.proxyBalancePath = config.proxyBalancePath
+    this.proxyCurrency = proxyCurrency
+    this.manualBalance = config.manualBalance
+    this.manualCurrency = manualCurrency
+    this.refreshIntervalMs = Math.max(0, (config.refreshIntervalSeconds ?? DEFAULT_REFRESH_INTERVAL_SECONDS) * 1_000)
+    this.model = config.model ?? 'auto'
+    this.userCostOverrides = config.cost
+    this.enabled = config.enabled ?? true
+    const candidate = config.manualLedger
+    const matchesInput = candidate?.version === 1
+      && candidate.initialBalance === this.manualBalance
+      && candidate.currency === this.manualCurrency
+    if (matchesInput) this.manualLedger = candidate
+    else if (manualInputChanged || candidate !== undefined) this.manualLedger = undefined
+    this.cached = undefined
+    this.cachedAt = 0
+  }
+
+  /** Attach the only authorized persistence path: the DSH settings namespace. */
+  setManualLedgerPersistence(persist: (ledger: ManualLedger) => Promise<void>): void {
+    this.persistManualLedger = persist
   }
 
   /** Whether the balance service answers queries while enabled. */
@@ -191,8 +489,9 @@ export class BalanceService extends Service {
    * automatically once the underlying condition clears (without a manual
    * click). Concurrent queries are deduped.
    */
-  async view(): Promise<BalanceView> {
-    if (!this.enabled) return { fetchedAt: Date.now(), available: false, balances: [], error: 'disabled' }
+  async view(session?: Session): Promise<BalanceView> {
+    if (!this.enabled) return { fetchedAt: Date.now(), source: this.source, available: false, balances: [], error: 'disabled' }
+    if (this.source === 'manual') return this.manualView(session)
     const now = Date.now()
     const cached = this.cached
     if (cached !== undefined && cached.error === undefined && now - this.cachedAt < this.refreshIntervalMs && this.refreshIntervalMs > 0) {
@@ -210,7 +509,8 @@ export class BalanceService extends Service {
   }
 
   /** RPC: force a fresh provider query (bypasses the cache window). */
-  async refresh(): Promise<BalanceView> {
+  async refresh(session?: Session): Promise<BalanceView> {
+    if (this.source === 'manual') return this.manualView(session)
     const view = await this.query()
     this.cached = view
     this.cachedAt = Date.now()
@@ -227,21 +527,7 @@ export class BalanceService extends Service {
    * @param session - the session whose usage is read.
    */
   sessionCost(session: Session): SessionCost {
-    const registry = this.ctx.get('sessionProjections') as
-      | { snapshot(s: Session): { values: Partial<Record<string, unknown>> } }
-      | undefined
-    let usage: TokenUsageProjection | undefined
-    if (registry !== undefined) {
-      const value = registry.snapshot(session).values.tokenUsage
-      if (value !== null && typeof value === 'object') usage = value as TokenUsageProjection
-    }
-    const zero = {
-      uncachedInputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-    }
-    const buckets = usage ?? zero
+    const buckets = this.sessionUsage(session)
     const { model, pricingKey } = this.resolveModelForSession(session)
     const config = this.effectiveCostConfig(pricingKey)
     const cost = costOfUsage({
@@ -262,6 +548,42 @@ export class BalanceService extends Service {
         cacheWrite: costOfTokens(buckets.cacheWriteTokens, config.cacheWritePerMillion),
         output: costOfTokens(buckets.outputTokens, config.outputPerMillion),
       },
+    }
+  }
+
+  /** Checkpoint a restored pre-baseline session before it can accrue live usage. */
+  async checkpointSession(session: Session): Promise<void> {
+    if (this.source !== 'manual') return
+    await this.withManualLock(async () => {
+      const ledger = await this.ensureManualLedger()
+      const id = String(session.id)
+      if (ledger.sessions[id] !== undefined || session.header.createdAt > ledger.baselineAt) return
+      await this.commitManualLedger({
+        ...ledger,
+        sessions: { ...ledger.sessions, [id]: this.sessionUsage(session) },
+      })
+    })
+  }
+
+  /** Read DSH's durable cumulative token projection. */
+  private sessionUsage(session: Session): UsageCheckpoint {
+    const registry = this.ctx.get('sessionProjections') as
+      | { snapshot(s: Session): { values: Partial<Record<string, unknown>> } }
+      | undefined
+    let usage: TokenUsageProjection | undefined
+    if (registry !== undefined) {
+      const value = registry.snapshot(session).values.tokenUsage
+      if (value !== null && typeof value === 'object') usage = value as TokenUsageProjection
+    }
+    const tokenCount = (value: unknown): number => {
+      const count = Number(value ?? 0)
+      return Number.isFinite(count) && count >= 0 ? count : 0
+    }
+    return {
+      uncachedInputTokens: tokenCount(usage?.uncachedInputTokens),
+      outputTokens: tokenCount(usage?.outputTokens),
+      cacheReadTokens: tokenCount(usage?.cacheReadTokens),
+      cacheWriteTokens: tokenCount(usage?.cacheWriteTokens),
     }
   }
 
@@ -355,20 +677,106 @@ export class BalanceService extends Service {
     return this.pricingSnapshot
   }
 
+  /** Serialize manual ledger reads/writes so concurrent browser polls cannot double-charge. */
+  private withManualLock<T>(run: () => Promise<T>): Promise<T> {
+    const result = this.manualQueue.then(run, run)
+    this.manualQueue = result.then(() => undefined, () => undefined)
+    return result
+  }
+
+  /** Initialize a new baseline and checkpoint all currently live sessions. */
+  private async ensureManualLedger(): Promise<ManualLedger> {
+    if (this.manualBalance === undefined) {
+      throw new Error('manual mode requires manualBalance in DSH settings')
+    }
+    const current = this.manualLedger
+    if (current !== undefined
+      && current.version === 1
+      && current.initialBalance === this.manualBalance
+      && current.currency === this.manualCurrency) {
+      return current
+    }
+    const sessionsStore = this.ctx.get('sessions') as { list(): Session[] } | undefined
+    const checkpoints: Record<string, UsageCheckpoint> = {}
+    for (const session of sessionsStore?.list() ?? []) {
+      checkpoints[String(session.id)] = this.sessionUsage(session)
+    }
+    const ledger = createManualLedger(this.manualBalance, this.manualCurrency, Date.now(), checkpoints)
+    await this.commitManualLedger(ledger)
+    return ledger
+  }
+
+  /** Persist before publishing in memory; failure leaves the previous ledger intact. */
+  private async commitManualLedger(ledger: ManualLedger): Promise<void> {
+    const persist = this.persistManualLedger
+    if (persist === undefined) {
+      throw new Error('manual mode requires a writable DSH settings provider')
+    }
+    await persist(ledger)
+    this.manualLedger = ledger
+    this.cached = undefined
+  }
+
+  /** Local remaining balance, optionally advanced for one current session. */
+  private async manualView(session?: Session): Promise<BalanceView> {
+    try {
+      return await this.withManualLock(async () => {
+        let ledger = await this.ensureManualLedger()
+        if (session !== undefined) {
+          const { pricingKey } = this.resolveModelForSession(session)
+          const next = advanceManualLedger(
+            ledger,
+            String(session.id),
+            session.header.createdAt,
+            this.sessionUsage(session),
+            this.effectiveCostConfig(pricingKey),
+          )
+          if (next !== ledger) {
+            await this.commitManualLedger(next)
+            ledger = next
+          }
+        }
+        return manualLedgerView(ledger)
+      })
+    } catch (error) {
+      return {
+        fetchedAt: Date.now(),
+        source: 'manual',
+        available: false,
+        balances: [],
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  /** Build the configured balance endpoint without leaking the credential. */
+  private balanceUrl(): string {
+    if (this.source === 'official') return `${DEFAULT_BASE_URL}/user/balance`
+    const endpoint = this.balanceEndpoint?.trim()
+    if (endpoint !== undefined && endpoint !== '') {
+      if (/^https?:\/\//i.test(endpoint)) return parseBaseUrl(endpoint).origin + parseBaseUrl(endpoint).prefix
+      const { origin, prefix } = parseBaseUrl(this.baseUrl)
+      return `${origin}${prefix}/${endpoint.replace(/^\/+/, '')}`
+    }
+    const { origin, prefix } = parseBaseUrl(this.baseUrl)
+    return `${origin}${prefix}/user/balance`
+  }
+
   private async query(): Promise<BalanceView> {
+    const source = this.source === 'manual' ? 'proxy' : this.source
     const key = await this.resolveApiKey()
     const fetchedAt = Date.now()
     if (key === undefined) {
       return {
         fetchedAt,
+        source,
         available: false,
         balances: [],
         error: `no API key (store ${this.apiKeyEnv} via the credentials seam, or export it in the environment)`,
       }
     }
     try {
-      const { origin, prefix } = parseBaseUrl(this.baseUrl)
-      const url = `${origin}${prefix}/user/balance`
+      const url = this.balanceUrl()
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 15_000)
       let response: Response
@@ -385,35 +793,24 @@ export class BalanceService extends Service {
         clearTimeout(timer)
       }
       if (!response.ok) {
-        const body = await response.text().catch(() => '')
         return {
           fetchedAt,
+          source,
           available: false,
           balances: [],
-          error: `Get User Balance failed: HTTP ${response.status}${body ? ` — ${truncate(body, 200)}` : ''}`,
+          error: `${source} balance request failed: HTTP ${response.status}`,
         }
       }
-      const payload = await response.json() as Partial<BalanceResponse>
-      const buckets: BalanceInfo[] = Array.isArray(payload.balance_infos)
-        ? payload.balance_infos.map((b) => ({
-          currency: String(b.currency ?? ''),
-          total_balance: String(b.total_balance ?? '0'),
-          granted_balance: String(b.granted_balance ?? '0'),
-          topped_up_balance: String(b.topped_up_balance ?? '0'),
-        })).filter((b) => b.currency !== '')
-        : []
-      const total = buckets.length === 1
-        ? Number(buckets[0]!.total_balance)
-        : undefined
-      return {
+      const payload = await response.json() as unknown
+      return parseProviderBalance(payload, source, {
+        balancePath: this.proxyBalancePath,
+        currency: this.proxyCurrency,
         fetchedAt,
-        available: payload.is_available !== false,
-        balances: buckets,
-        ...(total === undefined || Number.isNaN(total) ? {} : { total, currency: buckets[0]!.currency }),
-      }
+      })
     } catch (error) {
       return {
         fetchedAt,
+        source,
         available: false,
         balances: [],
         error: error instanceof Error ? error.message : String(error),
@@ -437,9 +834,4 @@ export class BalanceService extends Service {
     if (typeof envFallback === 'string' && envFallback.length > 0) return envFallback
     return undefined
   }
-}
-
-/** Bound a provider error body for reporting. */
-function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}..`
 }

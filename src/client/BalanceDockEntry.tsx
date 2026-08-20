@@ -30,8 +30,8 @@ interface SessionCostResponse {
 
 /** The host balance API as the browser sees it (same-origin JSON endpoints). */
 interface BalanceHttpApi {
-  view(): Promise<BalanceView>
-  refresh(): Promise<BalanceView>
+  view(sessionId: string | undefined): Promise<BalanceView>
+  refresh(sessionId: string | undefined): Promise<BalanceView>
   cost(sessionId: string | undefined): Promise<SessionCostResponse>
 }
 
@@ -46,8 +46,12 @@ async function balanceFetch<T>(path: string): Promise<T> {
 
 /** The live host API instance (failures surface per call). */
 const balanceApi: BalanceHttpApi = {
-  view: () => balanceFetch('/api/balance'),
-  refresh: () => balanceFetch('/api/balance/refresh'),
+  view: (sessionId) => balanceFetch(
+    sessionId === undefined ? '/api/balance' : `/api/balance?session=${encodeURIComponent(sessionId)}`,
+  ),
+  refresh: (sessionId) => balanceFetch(
+    sessionId === undefined ? '/api/balance/refresh' : `/api/balance/refresh?session=${encodeURIComponent(sessionId)}`,
+  ),
   cost: (sessionId) => balanceFetch(
     sessionId === undefined
       ? '/api/balance/cost'
@@ -93,7 +97,7 @@ export function BalanceDockEntry(props: BalanceDockEntryProps): React.ReactEleme
 
   const pollNow = useCallback(() => {
     let live = true
-    balanceApi.view().then((snapshot) => {
+    balanceApi.view(sessionId).then((snapshot) => {
       if (live) setView(snapshot)
     }, () => {
       if (live) setView(null)
@@ -121,12 +125,18 @@ export function BalanceDockEntry(props: BalanceDockEntryProps): React.ReactEleme
   }, [pollNow])
 
   const refresh = (): void => {
-    balanceApi.refresh().then((snapshot) => {
+    balanceApi.refresh(sessionId).then((snapshot) => {
       setView(snapshot)
     }, () => {
       // Ignore transport errors on manual refresh; the next poll resyncs.
     })
   }
+
+  const sourceLabel = view?.source === 'proxy'
+    ? props.t('balance.sourceProxy')
+    : view?.source === 'manual'
+      ? props.t('balance.sourceManual')
+      : props.t('balance.sourceOfficial')
 
   if (view === null || view.error !== undefined) {
     return (
@@ -138,6 +148,7 @@ export function BalanceDockEntry(props: BalanceDockEntryProps): React.ReactEleme
         data-testid="balance-chip-error"
       >
         <span className={css.dot} aria-hidden="true" />
+        <span className={css.source}>{sourceLabel}</span>
         {props.t('balance.unavailable')}
       </button>
     )
@@ -162,6 +173,7 @@ export function BalanceDockEntry(props: BalanceDockEntryProps): React.ReactEleme
       aria-expanded={open}
     >
       <span className={view.available ? css.dotOk : css.dot} aria-hidden="true" />
+      <span className={css.source}>{sourceLabel}</span>
       {balanceLabel}
       {costLabel !== undefined && (
         <>
@@ -181,6 +193,24 @@ export function BalanceDockEntry(props: BalanceDockEntryProps): React.ReactEleme
               </span>
             </span>
           ))}
+          {view.source === 'manual' && view.initialBalance !== undefined && (
+            <span className={css.row}>
+              <span>{props.t('balance.manualInitial')}</span>
+              <span className={css.rowRight}>
+                <span>{formatAmount(view.initialBalance)}</span>
+                <span>{view.currency ?? ''}</span>
+              </span>
+            </span>
+          )}
+          {view.source === 'manual' && view.localSpent !== undefined && (
+            <span className={css.row}>
+              <span>{props.t('balance.localSpent')}</span>
+              <span className={css.rowRight}>
+                <span>{formatAmount(view.localSpent)}</span>
+                <span>{view.currency ?? ''}</span>
+              </span>
+            </span>
+          )}
           {cost?.ok === true && cost.cost !== undefined && (
             <span className={css.costRow}>
               <span>{props.t('balance.sessionCost')}</span>
